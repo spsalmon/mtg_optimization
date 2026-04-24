@@ -1,6 +1,7 @@
 from neoform.engine.mana import check_if_castable, get_missing_mana, pay_mana_cost
 import numpy as np
 import random
+import copy
 
 def draw(deck, n):
     drawn_cards = []
@@ -10,7 +11,6 @@ def draw(deck, n):
     return drawn_cards
 
 def fetch(fetch_land, deck, missing_combo_pieces, missing_mana):
-    # same kind of logic as for playing lands, except this time we can't fetch :p
     missing_mana_count = [len(missing_mana) for missing_mana in missing_mana]
     missing_mana = sorted(missing_mana, key=lambda x: len(x))
 
@@ -25,7 +25,6 @@ def fetch(fetch_land, deck, missing_combo_pieces, missing_mana):
     surveil_lands = [land for land in fetchable_lands if land[1].surveil]
 
     if len(missing_mana_count) > 0 and np.min(missing_mana_count) == 1:
-        # priority, play land that makes the mana you want from your hand, if you can't, fetch for it (always prefer duals)
         pip = missing_mana[0]
         if untapped_duals:
             return untapped_duals[0]
@@ -40,7 +39,6 @@ def fetch(fetch_land, deck, missing_combo_pieces, missing_mana):
             else:
                 pass
         else:
-            # generic mana, in this case, priority : blue -> green -> fetch
             if untapped_blue_source:
                 return untapped_blue_source[0]
             elif untapped_green_source:
@@ -58,23 +56,38 @@ def fetch(fetch_land, deck, missing_combo_pieces, missing_mana):
         elif untapped_green_source:
             return untapped_green_source[0]
 
-def surveil(deck, missing_sac_target, missing_sac_outlet, missing_mana, lands_in_hand, missing_green_cards, missing_cantrip):
+
+def decide_surveil(deck, missing_sac_target, missing_sac_outlet, missing_mana, lands_in_hand, missing_green_cards, missing_cantrip):
+    """
+    Pure function: given the current game state, return 'keep' or 'bin' for the top card.
+    Does NOT mutate anything.
+    """
     card_on_top = deck[0]
-    if len(missing_mana)>0:
-        missing_mana_count = np.min([len(missing_mana) for missing_mana in missing_mana])
+
+    if len(missing_mana) > 0:
+        missing_mana_count = np.min([len(m) for m in missing_mana])
     else:
         missing_mana_count = 0
+
     if missing_sac_outlet and card_on_top[1].sac_outlet:
-        pass
+        return "keep"
     elif missing_sac_target and card_on_top[1].sac_target:
-        pass
+        return "keep"
     elif missing_mana_count > len(lands_in_hand) and card_on_top[1].land:
-        pass
+        return "keep"
     elif missing_green_cards and card_on_top[1].green:
-        pass
+        return "keep"
     elif missing_cantrip and card_on_top[1].cantrip:
-        pass
+        return "keep"
     else:
+        return "bin"
+
+def surveil(deck, missing_sac_target, missing_sac_outlet, missing_mana, lands_in_hand, missing_green_cards, missing_cantrip):
+    """
+    Stateful wrapper: decides and applies the surveil decision in place.
+    """
+    decision = decide_surveil(deck, missing_sac_target, missing_sac_outlet, missing_mana, lands_in_hand, missing_green_cards, missing_cantrip)
+    if decision == "bin":
         deck.pop(0)
 
 def check_for_win(hand, mana_pool, deck):
@@ -83,12 +96,11 @@ def check_for_win(hand, mana_pool, deck):
 
     green_cards = [card for card in hand if card[1].green]
     sac_outlet_castable = np.any([check_if_castable(sac_outlet, mana_pool) for sac_outlet in sac_outlets])
-    sac_target_castable = (len(sac_targets) > 0) & (len(green_cards) >= 4) # you need to take the rider and the sac outlet into account
+    sac_target_castable = (len(sac_targets) > 0) & (len(green_cards) >= 4)
     win = sac_outlet_castable & sac_target_castable
 
     missing_mana_to_cast_sac_outlet = [get_missing_mana(sac_outlet, mana_pool) for sac_outlet in sac_outlets]
 
-    # in case we don't have a sac outlet in hand, we still sometimes need to check if we potentially could case neoform / EE
     if not missing_mana_to_cast_sac_outlet:
         sac_outlets_in_deck = [card for card in deck if card[1].sac_outlet]
         sac_outlets_in_deck = list(set(sac_outlets_in_deck))
@@ -102,20 +114,19 @@ def check_for_win(hand, mana_pool, deck):
         return False, (missing_mana_to_cast_sac_outlet, missing_sac_target, missing_sac_outlet, missing_green_cards)
     else:
         return True, ([], False, False, False)
+
     
 def check_for_cantrip(hand, mana_pool):
     cantrips = [card for card in hand if card[1].cantrip]
-    # sort them by cantrip power
     cantrips = sorted(cantrips, key=lambda c: getattr(c[1], "cantrip_power", 0), reverse=True)
     missing_cantrip = len(cantrips) == 0
     castable_cantrips = [card for card in cantrips if check_if_castable(card, mana_pool)]
     missing_mana_to_cast_cantrip = [get_missing_mana(cantrip, mana_pool) for cantrip in cantrips]
 
     return castable_cantrips, missing_cantrip, missing_mana_to_cast_cantrip
+
     
 def play_land(lands_in_hand, missing_mana):
-    # two branches, either we're trying to cast something (we need the mana NOW) or it's more long term (we probably want to fetch / play a surveil land)
-    missing_mana_count = [len(missing_mana) for missing_mana in missing_mana]
     missing_mana = sorted(missing_mana, key=lambda x: len(x))
     untapped_lands_in_hand = [land for land in lands_in_hand if land[1].untapped]
     fetch_lands_in_hand = [land for land in lands_in_hand if land[1].fetch]
@@ -125,42 +136,37 @@ def play_land(lands_in_hand, missing_mana):
     surveil_lands_in_hand = [land for land in lands_in_hand if land[1].surveil]
     mdfc_lands_in_hand = [land for land in lands_in_hand if land[1].green and land[1].land]
 
-    if len(missing_mana_count) > 0 and np.min(missing_mana_count) == 1:
-        # priority, play land that makes the mana you want from your hand, if you can't, fetch for it (always prefer duals)
-        # in general, playing a MDFC is a last resort ! Those cards are also green and we need them for pitching.
-        pip = missing_mana[0]
-        
-        if untapped_duals:
-            return untapped_duals[0]
-        elif pip == "G":
-            if untapped_green_source:
-                return untapped_green_source[0]
-            elif fetch_lands_in_hand:
-                return fetch_lands_in_hand[0]
-            elif mdfc_lands_in_hand:
-                return mdfc_lands_in_hand[0]
+    missing_mana_for_cheapest_spell = missing_mana[0] if len(missing_mana) > 0 else None
+    if missing_mana_for_cheapest_spell is not None:
+        for pip in missing_mana_for_cheapest_spell:
+            if untapped_duals:
+                return untapped_duals[0]
+            elif pip == "G":
+                if untapped_green_source:
+                    return untapped_green_source[0]
+                elif fetch_lands_in_hand:
+                    return fetch_lands_in_hand[0]
+                elif mdfc_lands_in_hand:
+                    return mdfc_lands_in_hand[0]
+                else:
+                    pass
+            elif pip == "U":
+                if untapped_blue_source:
+                    return untapped_blue_source[0]
+                elif fetch_lands_in_hand:
+                    return fetch_lands_in_hand[0]
+                else:
+                    pass
             else:
-                pass
-        elif pip == "U":
-            if untapped_blue_source:
-                return untapped_blue_source[0]
-            elif fetch_lands_in_hand:
-                return fetch_lands_in_hand[0]
-            else:
-                pass
-        else:
-            # generic mana, in this case, priority : blue -> green -> fetch
-            if untapped_blue_source:
-                return untapped_blue_source[0]
-            elif untapped_green_source:
-                return untapped_green_source[0]
-            elif fetch_lands_in_hand:
-                return fetch_lands_in_hand[0]
-            else:
-                pass
+                if untapped_blue_source:
+                    return untapped_blue_source[0]
+                elif untapped_green_source:
+                    return untapped_green_source[0]
+                elif fetch_lands_in_hand:
+                    return fetch_lands_in_hand[0]
+                else:
+                    pass
             
-    # if we're here, it's because we either didn't manage to play a land that let's us play something, or because we don't care about doing it this turn
-    
     if surveil_lands_in_hand:
         return surveil_lands_in_hand[0]
     elif fetch_lands_in_hand:
@@ -170,7 +176,7 @@ def play_land(lands_in_hand, missing_mana):
             return untapped_green_source[0]
         if untapped_blue_source:
             return untapped_blue_source[0]
-        # in this case we don't want to play mdfcs if we don't need to, because they are also green cards that we might want to pitch later, so we only play them if we have no other option
+
 
 def process_played_land(land, hand, battlefield, mana_pool, mana_pool_for_turn, lands_in_hand, deck, missing_sac_target, missing_sac_outlet, missing_green_cards, missing_mana, missing_cantrip):
     missing_combo_pieces = missing_green_cards or missing_sac_outlet or missing_sac_target
@@ -200,9 +206,9 @@ def process_played_land(land, hand, battlefield, mana_pool, mana_pool_for_turn, 
         mana_pool_for_turn.append(land_production)
     mana_pool.append(land_production)
 
+
 def cantrip(card, mana_pool, hand, deck, missing_sac_target, missing_sac_outlet, missing_mana, lands_in_hand, missing_green_cards):
     cantrip_cost = card[1].cost
-    # pay the mana
     mana_pool = pay_mana_cost(cantrip_cost, mana_pool)
     hand.remove(card)
     
@@ -217,19 +223,15 @@ def cantrip(card, mana_pool, hand, deck, missing_sac_target, missing_sac_outlet,
     green_cards = [card for card in cantrip_pool if card[1].green]
     cantrips = [card for card in cantrip_pool if card[1].cantrip]
 
-    # sort sac outlets by increasing mana cost (fewest pips first)
     sac_outlets = sorted(sac_outlets, key=lambda c: len(getattr(c[1], "cost", [])))
-
-    # sort cantrips by descending cantrip_power (highest power first)
     cantrips = sorted(cantrips, key=lambda c: getattr(c[1], "cantrip_power", 0), reverse=True)
-    # choose a card from the cantrip pool based on missing pieces / priorities
+
     card = None
     if missing_sac_target and len(sac_targets) > 0:
         card = sac_targets[0]
     elif missing_sac_outlet and len(sac_outlets) > 0:
         card = sac_outlets[0]
     elif missing_mana and len(lands) > 0:
-        # prefer duals, then green, then blue, then any land
         duals = [l for l in lands if getattr(l[1], "produces_green", False) and getattr(l[1], "produces_blue", False)]
         greens = [l for l in lands if getattr(l[1], "produces_green", False)]
         blues = [l for l in lands if getattr(l[1], "produces_blue", False)]
@@ -254,3 +256,4 @@ def cantrip(card, mana_pool, hand, deck, missing_sac_target, missing_sac_outlet,
         deck.insert(-1, c)
     
     return mana_pool
+
